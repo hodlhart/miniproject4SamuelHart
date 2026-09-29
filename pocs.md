@@ -17,7 +17,7 @@ the id, then a dash character, then the title (`messages.html:6`,
 Those are evidence, and altering them would make the record inaccurate, so they
 are preserved as received. No em dash appears in the prose of this file.
 
-Status: 4 of 6 captured (sqli, idor, xss, authz). The other two are not yet
+Status: 5 of 6 captured (sqli, idor, xss, authz, traversal). Exposure is not yet
 worked.
 
 ---
@@ -848,6 +848,166 @@ FLAG{xss_bef03a753643}  VALID (xss)
 FLAG{authz_5e08dfcda13b}  VALID (authz)
 
 4/6 flags valid for username s_hart
+```
+
+No entry was made in `attempts.md`: the challenge was captured on the first
+attempt.
+
+---
+
+## 5. traversal: path traversal at `GET /download`
+
+**Flag:** `FLAG{traversal_a0f6cbbad304}`
+**Captured:** 2026-09-29
+**Verified:** `verify.py` exit 1 with `5/6 valid` and the line
+`FLAG{traversal_a0f6cbbad304}  VALID (traversal)`. Exit 1 is expected while one
+challenge remains.
+
+**Scope note for the report.** This section is the traversal finding and nothing
+else. The route used is `/download`. `/download` is also capable of reaching the
+`backups/` directory with a second `..` segment, and that request was
+deliberately not sent, because the exposure challenge is a different finding on a
+different route that requires no traversal at all. Keeping the two apart matters:
+a single request that reads the backup file through `/download` would demonstrate
+traversal twice and exposure zero times, and would blur which bug each flag
+belongs to. The two flags are distinct and are attributed to distinct routes.
+
+### The vulnerability
+
+The filename is taken straight from the query string with a default
+(`app.py:321`), joined onto the web root with `os.path.join` (`app.py:323`), and
+opened with no further checks (`app.py:325`):
+
+```python
+name = request.args.get("file", "welcome.txt")          # app.py:321
+path = os.path.join(APP_DIR, "public", name)            # app.py:323
+with open(path, "r") as fh:                             # app.py:325
+```
+
+There is no `basename`, no `os.path.realpath`, no rejection of `..`, no allowlist
+of permitted filenames, and no check that the resolved path stays inside
+`public/`. The `..` segment is therefore passed through to the operating system,
+which honours it, and the join walks out of the web root.
+
+It is worth being precise about which operation is at fault, because it is not a
+misuse of `os.path.join`. `join` behaves as documented: it concatenates. The
+missing step is the one that should follow it, comparing the resolved path
+against the base directory and refusing anything that escapes. `app.py:323` and
+`app.py:325` are the vulnerable pair.
+
+The directory layout that makes this work is set at `app.py:162` to
+`app.py:169`. `welcome.txt` is written into `public/`, and `employee_notes.txt`
+is written into `private/`, which is a sibling of `public/`, not a child. One
+`..` segment is exactly enough to step from one to the other:
+
+```
+<APP_DIR>/public/../private/employee_notes.txt
+   resolves to
+<APP_DIR>/private/employee_notes.txt
+```
+
+### The request and the response
+
+Literal request:
+
+```
+curl -s -w "\n[http_code=%{http_code}]\n" \
+  "http://127.0.0.1:5000/download?file=../private/employee_notes.txt"
+```
+
+The request line as it went on the wire, from `curl --trace-ascii`:
+
+```
+0000: GET /download?file=../private/employee_notes.txt HTTP/1.1
+003b: Host: 127.0.0.1:5000
+0051: User-Agent: curl/8.22.0
+```
+
+curl sent the `..` and the slashes literally, with no percent-encoding. Literal
+response:
+
+```
+CONFIDENTIAL - employees only
+If you can read this through the download endpoint, the path filter failed.
+FLAG{traversal_a0f6cbbad304}
+
+[http_code=200]
+```
+
+The file's own text names the condition that produced it: the path filter
+failed. The flag is the third line, written by `app.py:164` to `app.py:169`.
+
+No session was required. `/download` does not call `current_user()` and has no
+authentication at all (`app.py:319` to `app.py:329`), so this is reachable by an
+anonymous visitor.
+
+### Controls run alongside the exploit
+
+| Request | Result | What it establishes |
+|---|---|---|
+| `file` omitted (default) | `200`, contents of `welcome.txt` | the endpoint works as intended and the app was healthy |
+| `file=welcome.txt` | `200`, same contents | the intended use is unaffected |
+| `file=employee_notes.txt` | `404`, `File not found.` | the target file is **not** in `public/`. The name alone finds nothing, so the `..` segment is what reaches it, and this is not a case of an over-broad directory listing |
+| `file=nope.txt` | `404`, `File not found.` | the error path is a genuine 404, so the `200`s above are meaningful rather than a blanket response |
+| `file=..%2Fprivate%2Femployee_notes.txt` | `200`, same flag | the percent-encoded form works identically, which shows there is no filter being bypassed by encoding tricks. There is simply no filter |
+
+The third control is the important one. `employee_notes.txt` requested on its own
+returns `404`, which confirms the file sits outside the web root and is reachable
+only by escaping it. That is the difference between "the endpoint serves files"
+and "the endpoint serves files outside its directory", and it is the claim the
+report needs to make.
+
+The fifth control is worth a line as well, because it forecloses a wrong reading
+of the finding. The encoded form working is not an encoding bypass; it is the
+same request with the parameter spelled differently, and it works for the same
+reason the plain form does. A reader who assumes a filter existed and was
+defeated would misdescribe the vulnerability.
+
+### Notes and limits
+
+- The error handler catches both `OSError` and `ValueError` (`app.py:327` to
+  `app.py:328`). The `OSError` half covers the missing-file case exercised above.
+  The `ValueError` half is consistent with a path containing an embedded null
+  byte, which Python rejects at `open()` time with `ValueError` rather than
+  `OSError`. That is an inference about why the clause is there, not something
+  tested here; it is not needed for this finding, and the flag was already
+  captured without it.
+- Recon section 8 lists a separate open question about `/download?file=/etc/passwd`
+  and the absolute-path behaviour of `os.path.join`. That is still untested. It
+  is a second consequence of the same missing check, and if the report mentions
+  it, it should be clearly marked as unverified, or verified with a request
+  before submission. It is outside the graded challenge.
+- The fix is to resolve the path and confirm containment, for example
+  `os.path.realpath` followed by a check that the result is within
+  `os.path.realpath(public_dir)`, or Werkzeug's `safe_join`, which performs that
+  containment check. Rejecting `..` by string matching is the weaker fix,
+  because encoding and path-normalisation variants defeat substring checks. The
+  right control is containment of the resolved path.
+- Restarting the app rewrites `private/employee_notes.txt` with the same flag
+  (`app.py:407`, `app.py:164` to `app.py:169`), and the flag is stable across
+  restarts because it derives from `FLAG_SEED` (`app.py:62` to `app.py:67`).
+- The value of `FLAG_SEED` used was `s_hart`, and the flag was accepted by
+  `verify.py` for `--username s_hart`.
+
+### Result
+
+Appended to `submission.txt`:
+
+```
+FLAG{traversal_a0f6cbbad304}
+```
+
+Verifier output:
+
+```
+verify: 5/6 valid. Still missing: exposure
+FLAG{sqli_0883918f1b72}  VALID (sqli)
+FLAG{idor_c143bbc0c939}  VALID (idor)
+FLAG{xss_bef03a753643}  VALID (xss)
+FLAG{authz_5e08dfcda13b}  VALID (authz)
+FLAG{traversal_a0f6cbbad304}  VALID (traversal)
+
+5/6 flags valid for username s_hart
 ```
 
 No entry was made in `attempts.md`: the challenge was captured on the first
