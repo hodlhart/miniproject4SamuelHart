@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+vulnhub.db
+public/welcome.txt
+private/employee_notes.txt
+backups/vulnhub.sql.bak
+.venv/
+
+# submission.txt is deliberately NOT ignored, though the starter file ignores it.
+# The rubric requires it tracked in the repository (one captured flag per line),
+# so it is a graded deliverable and must be committed.

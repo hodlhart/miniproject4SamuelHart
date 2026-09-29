@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Vuln Hub</h1>
+<p>This is your authorized target for <strong>Mini Project 4 (Cybersecurity track)</strong>.
+It has <strong>6 planted vulnerabilities</strong>. Each one hides a unique
+<code>FLAG{...}</code> that you can only read by actually exploiting the bug.</p>
+
+<p>Capture the flags, check them with <code>check_flags.py</code>, then submit them with your
+proof-of-concept and report. <strong>Only test this app.</strong></p>
+
+<h2>Challenge board</h2>
+<ol>
+  <li><strong>Front door</strong> — the login form trusts what you type a little too much.</li>
+  <li><strong>Other people's mail</strong> — message pages are addressed by number.</li>
+  <li><strong>Guestbook</strong> — comments are shown to every visitor exactly as written. An admin reads them.</li>
+  <li><strong>The vault</strong> — <code>/vault</code> is for superadmins. How does the app know who is one?</li>
+  <li><strong>Downloads</strong> — the download link names a file. What else can it name?</li>
+  <li><strong>Recon</strong> — well-behaved crawlers read <code>/robots.txt</code> first.</li>
+</ol>
+
+<p>Public test account (for the challenges that need a normal session):
+<code>alice / password123</code></p>
+
+<h2>How to submit flags</h2>
+<p>Put each captured flag on its own line in <code>submission.txt</code> and run:</p>
+<pre>python check_flags.py submission.txt --username &lt;your FHSU username&gt;</pre>
+{% endblock %}

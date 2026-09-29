@@ -1,0 +1,9 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.db
+grade.py
+INSTRUCTOR.md
+.git/
+submission.txt

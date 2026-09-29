@@ -1,0 +1,12 @@
+services:
+  vulnhub:
+    build: .
+    image: inf601-vulnhub
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      # Your FHSU username (e.g. jdoe). Set it before running:
+      #   bash/zsh:   export FLAG_SEED=jdoe
+      #   PowerShell: $env:FLAG_SEED="jdoe"
+      FLAG_SEED: ${FLAG_SEED:?set FLAG_SEED to your FHSU username}
+    # Intentionally vulnerable: never expose this beyond localhost / a lab net.

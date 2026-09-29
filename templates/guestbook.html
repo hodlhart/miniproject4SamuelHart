@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Guestbook</h1>
+<p class="hint">Comments are displayed to everyone who visits — including the site admin.</p>
+<form method="post">
+  <label>Leave a comment<br>
+    <textarea name="comment" rows="3" cols="50"></textarea>
+  </label>
+  <button type="submit">Post</button>
+</form>
+<hr>
+<div class="comments">
+  {% for row in rows %}
+    <div class="comment">
+      <span class="author">{{ row.author }}</span>:
+      {# VULN (xss): rendered with |safe, so comment HTML/JS is NOT escaped #}
+      <span class="text">{{ row.body | safe }}</span>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}

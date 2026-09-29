@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Your messages</h1>
+<ul>
+  {% for row in rows %}
+    <li><a href="{{ url_for('message_detail', msg_id=row.id) }}">#{{ row.id }} — {{ row.title }}</a></li>
+  {% else %}
+    <li>No messages.</li>
+  {% endfor %}
+</ul>
+<p class="hint">Each message has a number in its URL.</p>
+{% endblock %}

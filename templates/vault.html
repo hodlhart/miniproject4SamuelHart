@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>The Vault</h1>
+{% if flag %}
+  <p>Access granted, superadmin.</p>
+  <p class="note">{{ flag }}</p>
+{% else %}
+  <p class="error">403 — superadmins only.</p>
+  <p class="hint">You are signed in as <strong>{{ user.username }}</strong>
+  (role: <strong>{{ user.role }}</strong>). The app decides your role from the
+  <code>auth</code> cookie it handed you. How is that cookie built?</p>
+{% endif %}
+{% endblock %}

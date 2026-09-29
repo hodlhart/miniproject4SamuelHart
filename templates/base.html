@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Vuln Hub — INF601 Practice Target</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <a href="{{ url_for('home') }}" class="brand">Vuln Hub</a>
+    <nav>
+      <a href="{{ url_for('home') }}">Home</a>
+      <a href="{{ url_for('login') }}">Login</a>
+      <a href="{{ url_for('messages') }}">Messages</a>
+      <a href="{{ url_for('guestbook') }}">Guestbook</a>
+      <a href="{{ url_for('download') }}?file=welcome.txt">Downloads</a>
+      {% if user %}<a href="{{ url_for('logout') }}">Logout ({{ user.username }})</a>{% endif %}
+    </nav>
+  </header>
+  {% if using_default_seed %}
+  <div class="seed-warning">
+    <strong>WARNING: this app is running on the DEFAULT seed.</strong>
+    FLAG_SEED is not set, so these flags will NOT be valid for your username.
+    Stop the app and restart it with FLAG_SEED set to your FHSU username
+    (e.g. <code>FLAG_SEED=jdoe python app.py</code>, or in PowerShell
+    <code>$env:FLAG_SEED="jdoe"; python app.py</code>).
+  </div>
+  {% endif %}
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+  <footer>
+    <p>⚠️ Intentionally vulnerable practice target — run locally only. Not for production use.</p>
+  </footer>
+</body>
+</html>

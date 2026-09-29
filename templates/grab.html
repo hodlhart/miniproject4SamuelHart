@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Collected data</h1>
+<p class="hint">This endpoint records anything sent to it as a query string. If your
+stored-XSS payload fired in the admin's browser, whatever it sent shows up here.</p>
+{% if captures %}
+  <ul>
+    {% for c in captures %}<li><code>{{ c }}</code></li>{% endfor %}
+  </ul>
+{% else %}
+  <p>Nothing collected yet.</p>
+{% endif %}
+{% endblock %}
