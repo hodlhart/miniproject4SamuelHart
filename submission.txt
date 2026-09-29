@@ -3,3 +3,4 @@ FLAG{idor_c143bbc0c939}
 FLAG{xss_bef03a753643}
 FLAG{authz_5e08dfcda13b}
 FLAG{traversal_a0f6cbbad304}
+FLAG{exposure_09e041147788}

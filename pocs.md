@@ -17,8 +17,7 @@ the id, then a dash character, then the title (`messages.html:6`,
 Those are evidence, and altering them would make the record inaccurate, so they
 are preserved as received. No em dash appears in the prose of this file.
 
-Status: 5 of 6 captured (sqli, idor, xss, authz, traversal). Exposure is not yet
-worked.
+Status: 6 of 6 captured. `verify.py` exits 0.
 
 ---
 
@@ -1012,3 +1011,221 @@ FLAG{traversal_a0f6cbbad304}  VALID (traversal)
 
 No entry was made in `attempts.md`: the challenge was captured on the first
 attempt.
+
+---
+
+## 6. exposure: sensitive data exposure on an unauthenticated route at `GET /backups/<path:name>`
+
+**Flag:** `FLAG{exposure_09e041147788}`
+**Captured:** 2026-09-29
+**Verified:** `verify.py` **exits 0** with `6/6 flags valid for username s_hart`.
+
+### Classification, stated explicitly
+
+**This is sensitive data exposure through an unauthenticated route. It is not
+path traversal.**
+
+The distinction is not cosmetic, and the report should carry it in exactly those
+terms. The request below contains no `..` segment, no encoded traversal, and no
+attempt to escape any directory. The path in the URL maps directly onto the
+file's own location inside the directory the route serves:
+
+```
+requested:  /backups/vulnhub.sql.bak
+served:     <APP_DIR>/backups/vulnhub.sql.bak
+```
+
+Nothing crosses a boundary. The file is reachable because it sits inside a
+directory that is served to anyone who asks, and because nothing in front of
+that directory checks who is asking. A traversal finding is about a request that
+climbs out of the served root; this one never needs to climb, because the
+sensitive file was placed inside the root.
+
+Keeping this separate from section 5 matters for the same reason: `/download`
+with a `..` segment can also reach this same file, and that request was
+deliberately withheld so that this flag is attributed to this route and this
+cause only. Testing it is recorded under controls below rather than used as the
+PoC.
+
+### The vulnerability
+
+The route reads the name from the URL, joins it onto the backups directory, and
+returns the file's contents (`app.py:338` to `app.py:347`):
+
+```python
+@app.route("/backups/<path:name>")
+def backups(name):
+    path = os.path.join(APP_DIR, "backups", name)       # app.py:341
+    with open(path, "r") as fh:                          # app.py:343
+        data = fh.read()
+```
+
+Three absences are the finding, and all three are visible in the function:
+
+- No authentication. The handler never calls `current_user()`, unlike every
+  protected route in the app (`app.py:231`, `app.py:250`, `app.py:261`,
+  `app.py:309`). There is no cookie read and no redirect to `/login`.
+- No role test. Nothing here compares anything against a role or a username,
+  which is what `/vault` does at `app.py:314`.
+- No filtering of `name` and no allowlist. The `<path:...>` converter is used
+  precisely because it accepts embedded slashes (`app.py:338`), so the route is
+  built to serve a directory tree rather than a single named file.
+
+The exposure is a consequence of placement as much as of code. `app.py:170` to
+`app.py:175` writes a database backup into `backups/`, with the file's own
+contents saying it should not be world-readable and that it was left in
+`backups/` by mistake. The directory that holds it is the one the route serves.
+
+### The discovery path: `/robots.txt`
+
+`/robots.txt` is a static string that disallows `/backups/`
+(`app.py:332` to `app.py:335`). This is the recon entry point, and it is how a
+tester finds the target, but it is not a control and must not be described as
+one. The `Disallow` directive is a convention that well-behaved crawlers honour
+voluntarily. It has no effect on a client that ignores it, and it is not enforced
+by the server at any point. The route it names has no idea the file exists.
+
+Worse than being ineffective, it advertises. A `Disallow` line naming a path
+tells any reader exactly where to look, which is the reason it belongs in the
+report as a contributing factor rather than as a defence.
+
+Literal request:
+
+```
+curl -s -w "\n[http_code=%{http_code}]\n" http://127.0.0.1:5000/robots.txt
+```
+
+Literal response:
+
+```
+User-agent: *
+Disallow: /backups/
+
+[http_code=200]
+```
+
+### The request and the response
+
+Following the breadcrumb at its exact disclosed path. Literal request:
+
+```
+curl -s -w "\n[http_code=%{http_code}]\n" \
+  http://127.0.0.1:5000/backups/vulnhub.sql.bak
+```
+
+The request line as it went on the wire, from `curl --trace-ascii`:
+
+```
+0000: GET /backups/vulnhub.sql.bak HTTP/1.1
+```
+
+No `..` segment, no percent-encoding, no query string. Literal response:
+
+```
+-- database backup (should NOT be world-readable)
+-- left in /backups/ by mistake
+INSERT INTO secrets VALUES ('FLAG{exposure_09e041147788}');
+
+[http_code=200]
+```
+
+Response headers confirm the served type:
+
+```
+HTTP/1.1 200 OK
+Server: Werkzeug/3.1.9 Python/3.13.15
+Content-Type: text/plain; charset=utf-8
+Content-Length: 142
+```
+
+No cookie was sent with this request. The flag is the third line, written by
+`app.py:170` to `app.py:175`, and it arrives without any credential, session, or
+traversal.
+
+The `Content-Type: text/plain` is worth a line, because it bounds the severity
+and the report should not overstate it. The file is returned as text rather than
+rendered as HTML, so the response is a disclosure and not a scripting sink. The
+impact is that a database backup containing seeded secrets is readable by anyone
+who can reach the port.
+
+### Controls run alongside the exploit
+
+| Request | Result | What it establishes |
+|---|---|---|
+| `GET /robots.txt` | `200`, names `/backups/` | the discovery path, and that the directive is served by an unauthenticated route too |
+| `GET /backups/` | `404`, Werkzeug's own not-found page | the route needs a name, so this is a file fetch and not a directory listing |
+| `GET /backups/nope.bak` | `404`, `Not found.` | the app's own error path (`app.py:345` to `app.py:346`) is reached, so the `200` above is a real hit and not a blanket response |
+| `GET /download?file=../backups/vulnhub.sql.bak` | `200` | a second route also reaches this file, by a different cause. Recorded for completeness only; **not** used for this finding, because that request is traversal and belongs to section 5 |
+
+The third control is the one that makes the `200` meaningful. The route does
+distinguish a missing file, so serving this one is a decision it made, not an
+absence of judgement about any path.
+
+The fourth control is a deliberate disclosure rather than a PoC. It shows the two
+findings overlap in effect while remaining distinct in cause, and the report
+should say that plainly: the same file is exposed twice, once by a route that
+serves a directory without checking who is asking, and once by a route that
+follows `..` out of a different directory. The graded flag is attributed to the
+first.
+
+### Notes and limits
+
+- The route is reachable by an anonymous visitor. Nothing in this section used a
+  cookie, a login, or any credential.
+- The fix is not to filter `name`. Filtering would still leave a whole directory
+  of sensitive files served to anyone who knows a filename, and the file's
+  presence under a served directory is the root cause. The controls should be to
+  keep backups outside the web root entirely, which is the real correction, and
+  if any file must be served from a route like this, to require authentication,
+  serve only allowlisted names, and set an explicit content type. `robots.txt`
+  should be removed from the reasoning about protection altogether; it does not
+  protect anything and it points at the target.
+- This is the same missing-control family as section 5 (no containment of what a
+  user-supplied path can reach) but the causal chain differs, and the report
+  should keep the two in separate findings with separate fixes.
+- Restarting the app rewrites the backup file with the same flag (`app.py:407`,
+  `app.py:170` to `app.py:175`), and the flag is stable across restarts because
+  it derives from `FLAG_SEED` (`app.py:62` to `app.py:67`).
+- The value of `FLAG_SEED` used was `s_hart`, and the flag was accepted by
+  `verify.py` for `--username s_hart`.
+
+### Result
+
+Appended to `submission.txt`:
+
+```
+FLAG{exposure_09e041147788}
+```
+
+Verifier output, and the first run in this project to exit 0:
+
+```
+FLAG{sqli_0883918f1b72}  VALID (sqli)
+FLAG{idor_c143bbc0c939}  VALID (idor)
+FLAG{xss_bef03a753643}  VALID (xss)
+FLAG{authz_5e08dfcda13b}  VALID (authz)
+FLAG{traversal_a0f6cbbad304}  VALID (traversal)
+FLAG{exposure_09e041147788}  VALID (exposure)
+
+6/6 flags valid for username s_hart
+verify: all 6 flags valid.
+```
+
+Exit code 0. No entry was made in `attempts.md`: the challenge was captured on
+the first attempt.
+
+---
+
+## Summary of findings
+
+| # | Challenge | Route | Input | Root cause | Flag |
+|---|---|---|---|---|---|
+| 1 | sqli | `POST /login` | `username`, `password` | `%` interpolation into SQL, no binding (`app.py:213` to `app.py:216`) | `FLAG{sqli_0883918f1b72}` |
+| 2 | idor | `GET /messages/<int:msg_id>` | `msg_id` | no ownership check against the caller (`app.py:265` to `app.py:267`) | `FLAG{idor_c143bbc0c939}` |
+| 3 | xss | `POST /guestbook` | `comment` | `\| safe` disables autoescape (`guestbook.html:17`) | `FLAG{xss_bef03a753643}` |
+| 4 | authz | `GET /vault` | `auth` cookie | unsigned cookie carries the role (`app.py:182` to `app.py:184`, `app.py:314`) | `FLAG{authz_5e08dfcda13b}` |
+| 5 | traversal | `GET /download` | `file` | no containment check on the joined path (`app.py:323`, `app.py:325`) | `FLAG{traversal_a0f6cbbad304}` |
+| 6 | exposure | `GET /backups/<path:name>` | `name` | sensitive directory served with no authentication (`app.py:338` to `app.py:347`) | `FLAG{exposure_09e041147788}` |
+
+Each flag was captured on the first attempt. All six were accepted by
+`verify.py` for `--username s_hart`, and the final run exited 0.
