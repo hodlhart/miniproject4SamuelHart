@@ -1,2 +1,3 @@
 FLAG{sqli_0883918f1b72}
 FLAG{idor_c143bbc0c939}
+FLAG{xss_bef03a753643}

