@@ -21,6 +21,29 @@ appears in the prose of this report.
 
 ## 1. Scope and authorization
 
+**Authorization statement**
+
+I, Samuel Hart, confirm the following. This penetration test was performed as
+assigned coursework for INF601, Mini Project 4, Track A. The target, Vuln Hub,
+was supplied to me by the course instructor for this purpose. It ran only on my
+own machine, on the loopback interface. I tested this application and nothing
+else. No other host, service, network or account was probed, scanned or
+accessed at any point, and all testing stayed inside the boundary the assignment
+set.
+
+I understand that testing systems outside this scope would be an academic
+honesty and conduct violation. Every request recorded in this report, in
+`pocs.md` and in `pocs/replay.py` was sent to `http://127.0.0.1:5000`.
+
+Signed: Samuel Hart
+Date: 29 September 2026.
+
+**Scope.** The test covered one application, a deliberately vulnerable Flask
+app with six planted defects. It did not cover the host operating system, the
+Python runtime, anything reachable from the machine's network interfaces, or any
+other student's deployment. No denial-of-service, load or fuzz testing was
+performed, because none is needed to demonstrate the defects below.
+
 This was an **authorized** penetration test.
 
 - The target was assigned by the course instructor as the Mini Project 4
@@ -34,10 +57,8 @@ This was an **authorized** penetration test.
 - The instance used for all testing reported no default-seed warning banner,
   which confirms it was started with the seed belonging to this account and that
   the captured flags are the valid ones for it.
-
-Testing anything outside this scope would be an academic honesty violation. The
-boundary was treated as absolute: every request in this report and in `pocs.md`
-was sent to `http://127.0.0.1:5000`.
+- The boundary was treated as absolute: every request in this report and in
+  `pocs.md` was sent to `http://127.0.0.1:5000`.
 
 ## 2. Methodology
 
@@ -565,3 +586,51 @@ finding and was deliberately not used as the proof for the exposure flag.
   from the seed, so they are stable for this account across restarts. Findings
   were confirmed against one running process; no attempt was made to test the
   application under a different seed or in a container.
+
+## 6. How this report and the testing were produced
+
+The assignment directs that this report be AI-assisted, so this section states
+plainly which parts came from the agent and which did not. The repository README
+carries the fuller account in its AI Usage section.
+
+**What the agent did.** The work was driven with Claude Code. It read the target
+and wrote the attack-surface map, formed and tested one hypothesis per challenge,
+wrote the proofs of concept in `pocs.md`, wrote `pocs/replay.py`, and drafted this
+report and the README. The exploration loops were written as prompts in
+`LOOP_PROMPTS.md`, each paired with a verifier it answers to.
+
+**What was decided and verified by hand.** The work was constrained deliberately.
+One challenge at a time, never the whole target at once. Each loop had a stated
+termination condition rather than an open-ended instruction: the recon loop ended
+when the map covered all six areas, the challenge loop ended when `verify.py`
+exited zero, and the harness loop ended when the replay printed six of six against
+a freshly restarted application. A three-attempt cap was set on each challenge, so
+a misdiagnosis would stop and hand back rather than burn effort. Success was never
+judged by asking the agent whether it had succeeded: `verify.py` returning zero was
+the only accepted proof for a flag, and the replay harness had to re-derive every
+flag over HTTP before the findings were treated as settled.
+
+**What was changed in the agent's output.** Three corrections, all in the commit
+history:
+
+- `check_flags.py`, the supplied checker, prints VALID or NOT VALID per flag but
+  always exits zero. Its exit status therefore carries no information, and a loop
+  watching it would read green on a total failure. `verify.py` was written to wrap
+  it and turn the printed verdict into a real exit status, naming the challenges
+  still missing. This is what gave the challenge loop a termination condition that
+  can fail.
+- The starter `.gitignore` excluded `submission.txt`. The rubric requires that file
+  committed, one flag per line, and it is graded, so the rule would have silently
+  dropped a graded deliverable. The line was removed. The generated files holding
+  flags in plain text stay excluded.
+- The draft of `recon.md` stated the count of `request.` reads as eight, missing
+  the second `request.method` test, the one guarding the guestbook handler. The
+  count is nine. Both places carrying the old figure were corrected.
+
+The report text itself was reviewed after drafting and rewritten where it opened
+all six findings with the same sentence, set all six severity statements as fully
+bolded blocks, and repeated one construction across six methodology bullets. No
+factual content changed in that pass; every figure, citation and quoted response
+in this report was checked against the source or against a live response before
+this file was committed.
+
